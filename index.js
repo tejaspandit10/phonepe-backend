@@ -59,7 +59,7 @@ app.post("/pay", async (req, res) => {
     const checksum = sha256 + "###" + SALT_INDEX;
 
     const response = await axios.post(
-      "https://api.phonepe.com/apis/hermes/pg/v1/pay",
+      "https://api-preprod.phonepe.com/apis/hermes/pg/v1/pay",
       {
         request: base64Payload
       },
@@ -101,7 +101,7 @@ app.get("/status/:txnId", async (req, res) => {
 
   try {
     const response = await axios.get(
-      `https://api.phonepe.com/apis/hermes${path}`,
+      `https://api-preprod.phonepe.com/apis/hermes${path}`,
       {
         headers: {
           "Content-Type": "application/json",
