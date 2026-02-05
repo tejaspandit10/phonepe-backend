@@ -24,11 +24,16 @@ app.get("/", (req, res) => {
 });
 
 // ----------------------------
-// Create payment
+// Create payment (Standard Checkout)
 // ----------------------------
 app.post("/pay", async (req, res) => {
   try {
-    const { amount } = req.body;
+
+    const amount = Number(req.body.amount);
+
+    if (!amount || amount <= 0) {
+      return res.status(400).json({ error: "Invalid amount" });
+    }
 
     const merchantTransactionId = "MT" + Date.now();
 
@@ -36,7 +41,7 @@ app.post("/pay", async (req, res) => {
       merchantId: MERCHANT_ID,
       merchantTransactionId,
       merchantUserId: "MUID123",
-      amount: amount * 100, // rupees -> paise
+      amount: Math.round(amount * 100), // rupees → paise
       redirectUrl: `${process.env.BASE_URL}/status/${merchantTransactionId}`,
       redirectMode: "REDIRECT",
       callbackUrl: `${process.env.BASE_URL}/status/${merchantTransactionId}`,
@@ -59,10 +64,8 @@ app.post("/pay", async (req, res) => {
     const checksum = sha256 + "###" + SALT_INDEX;
 
     const response = await axios.post(
-      "https://api-preprod.phonepe.com/apis/hermes/pg/v1/pay",
-      {
-        request: base64Payload
-      },
+      "https://api.phonepe.com/apis/hermes/pg/v1/pay",
+      { request: base64Payload },
       {
         headers: {
           "Content-Type": "application/json",
@@ -71,11 +74,21 @@ app.post("/pay", async (req, res) => {
       }
     );
 
-    res.json(response.data);
+    const redirectUrl =
+      response.data?.data?.instrumentResponse?.redirectInfo?.url;
+
+    return res.json({
+      success: true,
+      redirectUrl,
+      raw: response.data
+    });
 
   } catch (error) {
+
     console.error(error?.response?.data || error.message);
-    res.status(500).json({
+
+    return res.status(500).json({
+      success: false,
       error: error?.response?.data || "Payment init failed"
     });
   }
@@ -100,8 +113,9 @@ app.get("/status/:txnId", async (req, res) => {
   const checksum = sha256 + "###" + SALT_INDEX;
 
   try {
+
     const response = await axios.get(
-      `https://api-preprod.phonepe.com/apis/hermes${path}`,
+      `https://api.phonepe.com/apis/hermes${path}`,
       {
         headers: {
           "Content-Type": "application/json",
@@ -111,13 +125,17 @@ app.get("/status/:txnId", async (req, res) => {
       }
     );
 
+    const state = response.data?.data?.state;
+
+    // You can improve this later (success / failed page)
     const successUrl = process.env.FRONTEND_SUCCESS_URL;
 
     return res.redirect(successUrl);
 
   } catch (error) {
+
     console.error(error?.response?.data || error.message);
-    res.status(500).send("Status check failed");
+    return res.status(500).send("Status check failed");
   }
 });
 
