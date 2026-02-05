@@ -1,60 +1,62 @@
-import express from "express";
-import cors from "cors";
-import crypto from "crypto";
-import axios from "axios";
-import dotenv from "dotenv";
-
-dotenv.config();
+const express = require("express");
+const axios = require("axios");
+const crypto = require("crypto");
+const cors = require("cors");
+require("dotenv").config();
 
 const app = express();
-
 app.use(cors());
 app.use(express.json());
-app.use(express.urlencoded({ extended: false }));
 
+const PORT = process.env.PORT || 5000;
 
-// ------------------------------------
-// Create PhonePe payment
-// ------------------------------------
-app.post("/api/phonepe/create-payment", async (req, res) => {
+const MERCHANT_ID = process.env.PHONEPE_MERCHANT_ID;
+const SALT_KEY = process.env.PHONEPE_SALT_KEY;
+const SALT_INDEX = process.env.PHONEPE_SALT_INDEX;
+
+// ----------------------------
+// Health check
+// ----------------------------
+app.get("/", (req, res) => {
+  res.send("PhonePe backend running");
+});
+
+// ----------------------------
+// Create payment
+// ----------------------------
+app.post("/pay", async (req, res) => {
   try {
-
     const { amount } = req.body;
-
-    if (!amount) {
-      return res.status(400).json({ success: false, message: "Amount missing" });
-    }
 
     const merchantTransactionId = "MT" + Date.now();
 
     const payload = {
-      merchantId: process.env.PHONEPE_MERCHANT_ID,
+      merchantId: MERCHANT_ID,
       merchantTransactionId,
-      merchantUserId: "USER1",
-      amount: Number(amount) * 100, // in paise
-      redirectUrl: `${process.env.BASE_URL}/api/phonepe/callback`,
-      redirectMode: "POST",
-      callbackUrl: `${process.env.BASE_URL}/api/phonepe/callback`,
+      merchantUserId: "MUID123",
+      amount: amount * 100, // rupees -> paise
+      redirectUrl: `${process.env.BASE_URL}/status/${merchantTransactionId}`,
+      redirectMode: "REDIRECT",
+      callbackUrl: `${process.env.BASE_URL}/status/${merchantTransactionId}`,
       paymentInstrument: {
         type: "PAY_PAGE"
       }
     };
 
-    const base64Payload = Buffer
-      .from(JSON.stringify(payload))
-      .toString("base64");
+    const payloadString = JSON.stringify(payload);
+    const base64Payload = Buffer.from(payloadString).toString("base64");
 
     const stringToSign =
-      base64Payload + "/pg/v1/pay" + process.env.PHONEPE_SALT_KEY;
+      base64Payload + "/pg/v1/pay" + SALT_KEY;
 
     const sha256 = crypto
       .createHash("sha256")
       .update(stringToSign)
       .digest("hex");
 
-    const checksum = sha256 + "###" + process.env.PHONEPE_SALT_INDEX;
+    const checksum = sha256 + "###" + SALT_INDEX;
 
-    const phonepeRes = await axios.post(
+    const response = await axios.post(
       "https://api.phonepe.com/apis/hermes/pg/v1/pay",
       {
         request: base64Payload
@@ -67,91 +69,55 @@ app.post("/api/phonepe/create-payment", async (req, res) => {
       }
     );
 
-    const redirectUrl =
-      phonepeRes.data?.data?.instrumentResponse?.redirectInfo?.url;
-
-    res.json({
-      success: true,
-      merchantTransactionId,
-      redirectUrl
-    });
+    res.json(response.data);
 
   } catch (error) {
-
-    console.log("PhonePe create error:",
-      error.response?.data || error.message);
-
+    console.error(error?.response?.data || error.message);
     res.status(500).json({
-      success: false,
-      message: "Failed to create PhonePe payment"
+      error: error?.response?.data || "Payment init failed"
     });
   }
 });
 
+// ----------------------------
+// Payment status
+// ----------------------------
+app.get("/status/:txnId", async (req, res) => {
 
-// ------------------------------------
-// PhonePe redirect / callback
-// ------------------------------------
-app.post("/api/phonepe/callback", (req, res) => {
+  const { txnId } = req.params;
 
-  // Do NOT trust this directly
-  // Always verify using status API from frontend or backend
+  const path = `/pg/v1/status/${MERCHANT_ID}/${txnId}`;
 
-  res.redirect(process.env.FRONTEND_SUCCESS_URL);
-});
+  const stringToSign = path + SALT_KEY;
 
+  const sha256 = crypto
+    .createHash("sha256")
+    .update(stringToSign)
+    .digest("hex");
 
-// ------------------------------------
-// Check payment status
-// ------------------------------------
-app.get("/api/phonepe/status/:txnId", async (req, res) => {
+  const checksum = sha256 + "###" + SALT_INDEX;
+
   try {
-
-    const txnId = req.params.txnId;
-
-    const path =
-      `/pg/v1/status/${process.env.PHONEPE_MERCHANT_ID}/${txnId}`;
-
-    const stringToSign = path + process.env.PHONEPE_SALT_KEY;
-
-    const sha256 = crypto
-      .createHash("sha256")
-      .update(stringToSign)
-      .digest("hex");
-
-    const checksum = sha256 + "###" + process.env.PHONEPE_SALT_INDEX;
-
-    const url = `https://api.phonepe.com/apis/hermes${path}`;
-
-    const phonepeRes = await axios.get(url, {
-      headers: {
-        "X-VERIFY": checksum,
-        "X-MERCHANT-ID": process.env.PHONEPE_MERCHANT_ID
+    const response = await axios.get(
+      `https://api.phonepe.com/apis/hermes${path}`,
+      {
+        headers: {
+          "Content-Type": "application/json",
+          "X-VERIFY": checksum,
+          "X-MERCHANT-ID": MERCHANT_ID
+        }
       }
-    });
+    );
 
-    res.json(phonepeRes.data);
+    const successUrl = process.env.FRONTEND_SUCCESS_URL;
+
+    return res.redirect(successUrl);
 
   } catch (error) {
-
-    console.log("PhonePe status error:",
-      error.response?.data || error.message);
-
-    res.status(500).json({
-      success: false,
-      message: "Failed to check payment status"
-    });
+    console.error(error?.response?.data || error.message);
+    res.status(500).send("Status check failed");
   }
 });
-
-
-// ------------------------------------
-
-app.get("/", (req, res) => {
-  res.send("PhonePe backend running");
-});
-
-const PORT = process.env.PORT || 5000;
 
 app.listen(PORT, () => {
   console.log("Server running on port", PORT);
