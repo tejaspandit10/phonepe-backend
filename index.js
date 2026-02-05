@@ -1,8 +1,10 @@
-const express = require("express");
-const axios = require("axios");
-const crypto = require("crypto");
-const cors = require("cors");
-require("dotenv").config();
+import express from "express";
+import axios from "axios";
+import crypto from "crypto";
+import cors from "cors";
+import dotenv from "dotenv";
+
+dotenv.config();
 
 const app = express();
 app.use(cors());
