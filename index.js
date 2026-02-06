@@ -1,5 +1,5 @@
 import express from "express";
-import axios from "axios";
+import Razorpay from "razorpay";
 import crypto from "crypto";
 import cors from "cors";
 import dotenv from "dotenv";
@@ -7,135 +7,103 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
+
 app.use(cors());
 app.use(express.json());
 
 const PORT = process.env.PORT || 5000;
 
-const MERCHANT_ID = process.env.PHONEPE_MERCHANT_ID;
-const SALT_KEY = process.env.PHONEPE_SALT_KEY;
-const SALT_INDEX = process.env.PHONEPE_SALT_INDEX;
+if (!process.env.RAZORPAY_KEY_ID || !process.env.RAZORPAY_KEY_SECRET) {
+  console.error("❌ Razorpay keys are missing in environment variables");
+}
 
-// ----------------------------
-// Health check
-// ----------------------------
-app.get("/", (req, res) => {
-  res.send("PhonePe backend running");
+const razorpay = new Razorpay({
+  key_id: process.env.RAZORPAY_KEY_ID,
+  key_secret: process.env.RAZORPAY_KEY_SECRET
 });
 
-// ----------------------------
-// Create payment (Standard Checkout)
-// ----------------------------
-app.post("/pay", async (req, res) => {
+app.get("/", (req, res) => {
+  res.send("Razorpay backend running");
+});
+
+app.post("/create-order", async (req, res) => {
   try {
+    const { amount } = req.body;
 
-    const amount = Number(req.body.amount);
+    const amountNumber = Number(amount);
 
-    if (!amount || amount <= 0) {
-      return res.status(400).json({ error: "Invalid amount" });
+    if (!amountNumber || amountNumber <= 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Invalid amount"
+      });
     }
 
-    const merchantTransactionId = "MT" + Date.now();
-
-    const payload = {
-      merchantId: MERCHANT_ID,
-      merchantTransactionId,
-      merchantUserId: "MUID123",
-      amount: Math.round(amount * 100), // rupees → paise
-      redirectUrl: `${process.env.BASE_URL}/status/${merchantTransactionId}`,
-      redirectMode: "REDIRECT",
-      callbackUrl: `${process.env.BASE_URL}/status/${merchantTransactionId}`,
-      paymentInstrument: {
-        type: "PAY_PAGE"
-      }
+    const options = {
+      amount: Math.round(amountNumber * 100),
+      currency: "INR",
+      receipt: "rcpt_" + Date.now()
     };
 
-    const payloadString = JSON.stringify(payload);
-    const base64Payload = Buffer.from(payloadString).toString("base64");
+    const order = await razorpay.orders.create(options);
 
-    const stringToSign =
-      base64Payload + "/pg/v1/pay" + SALT_KEY;
+    return res.json(order);
 
-    const sha256 = crypto
-      .createHash("sha256")
-      .update(stringToSign)
-      .digest("hex");
-
-    const checksum = sha256 + "###" + SALT_INDEX;
-
-    const response = await axios.post(
-      "https://api.phonepe.com/apis/hermes/pg/v1/pay",
-      { request: base64Payload },
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-VERIFY": checksum
-        }
-      }
-    );
-
-    const redirectUrl =
-      response.data?.data?.instrumentResponse?.redirectInfo?.url;
-
-    return res.json({
-      success: true,
-      redirectUrl,
-      raw: response.data
-    });
-
-  } catch (error) {
-
-    console.error(error?.response?.data || error.message);
+  } catch (err) {
+    console.error("Create order error:", err);
 
     return res.status(500).json({
       success: false,
-      error: error?.response?.data || "Payment init failed"
+      message: "Order creation failed"
     });
   }
 });
 
-// ----------------------------
-// Payment status
-// ----------------------------
-app.get("/status/:txnId", async (req, res) => {
-
-  const { txnId } = req.params;
-
-  const path = `/pg/v1/status/${MERCHANT_ID}/${txnId}`;
-
-  const stringToSign = path + SALT_KEY;
-
-  const sha256 = crypto
-    .createHash("sha256")
-    .update(stringToSign)
-    .digest("hex");
-
-  const checksum = sha256 + "###" + SALT_INDEX;
-
+app.post("/verify-payment", (req, res) => {
   try {
+    const {
+      razorpay_order_id,
+      razorpay_payment_id,
+      razorpay_signature
+    } = req.body;
 
-    const response = await axios.get(
-      `https://api.phonepe.com/apis/hermes${path}`,
-      {
-        headers: {
-          "Content-Type": "application/json",
-          "X-VERIFY": checksum,
-          "X-MERCHANT-ID": MERCHANT_ID
-        }
-      }
-    );
+    if (
+      !razorpay_order_id ||
+      !razorpay_payment_id ||
+      !razorpay_signature
+    ) {
+      return res.status(400).json({
+        success: false,
+        message: "Missing payment verification fields"
+      });
+    }
 
-    const state = response.data?.data?.state;
+    const body = `${razorpay_order_id}|${razorpay_payment_id}`;
 
-    // You can improve this later (success / failed page)
-    const successUrl = process.env.FRONTEND_SUCCESS_URL;
+    const expectedSignature = crypto
+      .createHmac("sha256", process.env.RAZORPAY_KEY_SECRET)
+      .update(body)
+      .digest("hex");
 
-    return res.redirect(successUrl);
+    if (expectedSignature === razorpay_signature) {
+      return res.json({
+        success: true,
+        message: "Payment verified"
+      });
+    }
 
-  } catch (error) {
+    return res.status(400).json({
+      success: false,
+      message: "Invalid signature"
+    });
 
-    console.error(error?.response?.data || error.message);
-    return res.status(500).send("Status check failed");
+  } catch (err) {
+    console.error("Verify payment error:", err);
+
+    return res.status(500).json({
+      success: false,
+      message: "Verification failed"
+    });
   }
 });
 
